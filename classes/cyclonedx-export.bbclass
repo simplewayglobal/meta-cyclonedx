@@ -518,6 +518,7 @@ python do_deploy_cyclonedx() {
             bom_ref_map[pn_pkg["name"]]=pn_pkg
             alias_map[pkg]=pn_pkg["name"]
 
+    cpe_dedup_map = {}
     for pkg in recipes:
         pn_list_filepath = os.path.join(cyclonedx_work_dir_root, pkg, "pn-list.json")
 
@@ -530,6 +531,9 @@ python do_deploy_cyclonedx() {
             # Avoid multiple pkgs referencing the same cpe
             for sbom_pkg in sbom["components"]:
                 if pn_pkg["cpe"] == sbom_pkg["cpe"]:
+                    # Cross-recipe CPE duplicate: this recipe's VEX entries still reference
+                    # the skipped component, so record the redirect or they dangle.
+                    cpe_dedup_map.setdefault(pn_pkg["bom-ref"], sbom_pkg["bom-ref"])
                     break
             else:
                 sbom["components"].append(pn_pkg)
@@ -594,6 +598,32 @@ python do_deploy_cyclonedx() {
     # Ensure the directory exists
     import os
     os.makedirs(os.path.dirname(export_sbom_path), exist_ok=True)
+
+    import json
+    # Redirect VEX affects at deduplicated components to the canonical bom-ref and
+    # merge entries that now share an id (union of affects).
+    merged_vulns = {}
+    for vuln in vex["vulnerabilities"]:
+        affects = []
+        for affect in vuln.get("affects", []):
+            prefix, sep, frag = affect.get("ref", "").partition("#")  # bom-refs may contain '#'
+            seen = set()
+            while sep and frag in cpe_dedup_map and frag not in seen:
+                seen.add(frag)
+                frag = cpe_dedup_map[frag]
+            if sep:
+                affect = dict(affect, ref=f"{prefix}#{frag}")
+            if affect not in affects:
+                affects.append(affect)
+        vuln["affects"] = affects
+        # Merge only when the analysis matches; differing verdicts stay separate entries.
+        key = (vuln["id"], json.dumps(vuln.get("analysis", {}), sort_keys=True))
+        existing = merged_vulns.get(key)
+        if existing is None:
+            merged_vulns[key] = vuln
+        else:
+            existing["affects"].extend(a for a in affects if a not in existing["affects"])
+    vex["vulnerabilities"] = list(merged_vulns.values())
 
     write_json(export_sbom_path, sbom)
     write_json(export_vex_path, vex)
