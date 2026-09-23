@@ -519,7 +519,7 @@ python do_deploy_cyclonedx() {
             alias_map[pkg]=pn_pkg["name"]
 
     cpe_dedup_map = {}
-    for pkg in recipes:
+    for pkg in sorted(recipes):  # stable CPE-dedup winner across builds
         pn_list_filepath = os.path.join(cyclonedx_work_dir_root, pkg, "pn-list.json")
 
         if not os.path.exists(pn_list_filepath):
